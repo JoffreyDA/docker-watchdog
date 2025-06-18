@@ -1,61 +1,87 @@
 import docker
 from tabulate import tabulate
 
+# Seuils d'alerte
+CPU_SEUIL = 50       # en %
+MEM_SEUIL = 200      # en Mo
+RX_SEUIL = 10000     # en Ko
+TX_SEUIL = 10000     # en Ko
+
 def get_container_stats(container):
-    """
-    Retourne un dictionnaire de statistiques système pour un conteneur en cours d'exécution.
-    """
-    stats = container.stats(stream=False)
-    mem_usage = stats['memory_stats']['usage'] / (1024 ** 2)  # en Mo
-    cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - stats['precpu_stats']['cpu_usage']['total_usage']
-    system_delta = stats['cpu_stats']['system_cpu_usage'] - stats['precpu_stats']['system_cpu_usage']
-    cpu_percent = (cpu_delta / system_delta) * 100 if system_delta > 0 else 0
-    net_rx = 0
-    net_tx = 0
-    if 'networks' in stats:
-        for iface in stats['networks'].values():
-            net_rx += iface.get('rx_bytes', 0)
-            net_tx += iface.get('tx_bytes', 0)
-    return {
-        'cpu_percent': round(cpu_percent, 2),
-        'mem_MB': round(mem_usage, 2),
-        'rx_KB': round(net_rx / 1024, 2),
-        'tx_KB': round(net_tx / 1024, 2),
-    }
+    try:
+        stats = container.stats(stream=False)
+        mem = stats['memory_stats']['usage'] / (1024 ** 2)  # en Mo
 
-def list_containers():
-    """
-    Liste les conteneurs Docker et affiche leurs statistiques.
-    """
-    client = docker.from_env()
-    containers = client.containers.list(all=True)
-    result = []
+        cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - \
+                    stats['precpu_stats']['cpu_usage']['total_usage']
+        sys_delta = stats['cpu_stats']['system_cpu_usage'] - \
+                    stats['precpu_stats']['system_cpu_usage']
 
-    for container in containers:
-        stats = {
-            'Nom': container.name,
-            'Image': container.image.tags[0] if container.image.tags else 'inconnu',
-            'Statut': container.status
+        cpu = (cpu_delta / sys_delta) * 100 if sys_delta > 0 else 0
+
+        rx = tx = 0
+        for net in stats.get("networks", {}).values():
+            rx += net.get("rx_bytes", 0)
+            tx += net.get("tx_bytes", 0)
+
+        return {
+            "CPU (%)": round(cpu, 2),
+            "Mémoire (Mo)": round(mem, 2),
+            "Rx (Ko)": round(rx / 1024, 2),
+            "Tx (Ko)": round(tx / 1024, 2)
         }
 
-        if container.status == 'running':
-            usage = get_container_stats(container)
-            stats.update({
-                'CPU (%)': usage['cpu_percent'],
-                'Mémoire (Mo)': usage['mem_MB'],
-                'Rx (Ko)': usage['rx_KB'],
-                'Tx (Ko)': usage['tx_KB']
-            })
+    except Exception as e:
+        return {
+            "CPU (%)": "-",
+            "Mémoire (Mo)": "-",
+            "Rx (Ko)": "-",
+            "Tx (Ko)": "-"
+        }
+
+def check_alerts(stats):
+    alerts = []
+    try:
+        if stats.get("CPU (%)") != "-" and float(stats["CPU (%)"]) > CPU_SEUIL:
+            alerts.append("⚠️ CPU élevé")
+        if stats.get("Mémoire (Mo)") != "-" and float(stats["Mémoire (Mo)"]) > MEM_SEUIL:
+            alerts.append("⚠️ Mémoire élevée")
+        if stats.get("Rx (Ko)") != "-" and float(stats["Rx (Ko)"]) > RX_SEUIL:
+            alerts.append("⚠️ Rx élevé")
+        if stats.get("Tx (Ko)") != "-" and float(stats["Tx (Ko)"]) > TX_SEUIL:
+            alerts.append("⚠️ Tx élevé")
+    except:
+        pass
+    return alerts
+
+def list_containers():
+    client = docker.from_env()
+    containers = client.containers.list(all=True)
+    data = []
+
+    for container in containers:
+        infos = {
+            "Nom": container.name,
+            "Image": container.image.tags[0] if container.image.tags else "inconnu",
+            "Statut": container.status
+        }
+
+        if container.status == "running":
+            stats = get_container_stats(container)
+            infos.update(stats)
+            infos["Alertes"] = ", ".join(check_alerts(stats))
         else:
-            stats.update({
-                'CPU (%)': '-',
-                'Mémoire (Mo)': '-',
-                'Rx (Ko)': '-',
-                'Tx (Ko)': '-'
+            infos.update({
+                "CPU (%)": "-",
+                "Mémoire (Mo)": "-",
+                "Rx (Ko)": "-",
+                "Tx (Ko)": "-",
+                "Alertes": "-"
             })
 
-        result.append(stats)
+        data.append(infos)
 
-    print(tabulate(result, headers='keys', tablefmt='grid'))
-    
-list_containers()    
+    print(tabulate(data, headers="keys", tablefmt="fancy_grid"))
+
+if __name__ == "__main__":
+    list_containers()
