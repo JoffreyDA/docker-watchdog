@@ -2,3 +2,4 @@ docker
 tabulate
 pytest
 pytest-cov
+streamlit
